@@ -2,112 +2,97 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
+const mongoose = require('mongoose');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: "*" } });
+const io = new Server(server, { cors: { origin: '*' } });
 
-let users = {
-  "269849": { id: "269849", name: "New Member", coins: 500, vip: 0 }
-};
-let rooms = {};
+const mongoUri = process.env.MONGO_URI || '';
+if (mongoUri) {
+  mongoose.connect(mongoUri)
+    .then(() => console.log('MongoDB Atlas Connected!'))
+    .catch(err => console.error('MongoDB Error:', err));
+}
 
-// 1. Odeeffannoo Fayyadamaafi Coins Argachuu
-app.get('/api/user/:id', (req, res) => {
-  const user = users[req.params.id];
-  if (!user) return res.status(404).json({ error: "User not found" });
-  res.json(user);
+const userSchema = new mongoose.Schema({
+  userId: { type: String, unique: true },
+  coins: { type: Number, default: 0 },
+  points: { type: Number, default: 0 },
+  vipLevel: { type: Number, default: 0 },
+  usedRefs: { type: [String], default: [] }
 });
+const User = mongoose.model('User', userSchema);
 
-// 2. Tapha Oromia Royal Slot
-app.post('/api/games/slot', (req, res) => {
-  const { userId, betAmount } = req.body;
-  const user = users[userId];
+async function getOrCreateUser(userId) {
+  let user = await User.findOne({ userId });
+  if (!user) user = await User.create({ userId, coins: 0, points: 0, vipLevel: 0, usedRefs: [] });
+  return user;
+}
 
-  if (!user || user.coins < betAmount) {
-    return res.status(400).json({ error: "Coins gahaa hin qabdu!" });
-  }
+app.get('/', (req, res) => res.send('Ethio-Voice Server + MongoDB Live!'));
 
-  user.coins -= betAmount;
-  const items = ["Jebena", "Palace", "Oromo Horse"];
-  const result = [
-    items[Math.floor(Math.random() * items.length)],
-    items[Math.floor(Math.random() * items.length)],
-    items[Math.floor(Math.random() * items.length)]
-  ];
-
-  let winAmount = 0;
-  if (result[0] === result[1] && result[1] === result[2]) {
-    winAmount = betAmount * 5;
-    user.coins += winAmount;
-  }
-
-  res.json({ result, winAmount, newBalance: user.coins });
-});
-
-// 3. Kaffaltii Chapa Jalqabuuf
-app.post('/api/payment/buy-coins', async (req, res) => {
-  const { userId, amountETB, email, firstName } = req.body;
-  const tx_ref = `jimma-${userId}-${Date.now()}`;
-
+app.get('/api/user/:userId', async (req, res) => {
   try {
-    const response = await fetch("https://chapa.co", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${process.env.CHAPA_SECRET_KEY}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        amount: amountETB,
-        currency: "ETB",
-        email: email,
-        first_name: firstName,
-        tx_ref: tx_ref,
-        callback_url: "https://onrender.com"
-      })
-    });
-    const data = await response.json();
-    res.json(data);
-  } catch (err) {
-    res.status(500).json({ error: "Kaffaltiin hin milkoofne" });
-  }
+    const user = await getOrCreateUser(req.params.userId);
+    res.json({ success: true, coins: user.coins, points: user.points, vipLevel: user.vipLevel });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// 4. Real-Time Voice Room & Gift System
+app.post('/api/games/slot', async (req, res) => {
+  try {
+    const { userId, betAmount } = req.body;
+    const user = await getOrCreateUser(userId);
+    if (user.coins < betAmount) return res.status(400).json({ error: 'Coins gahaa hin qabdu!' });
+
+    user.coins -= betAmount;
+    const symbols = ['☕ Jebena', '🏰 Palace', '🐎 Oromo Horse', '🪑 Royal Stool', '🦁 Lion'];
+    const isWin = Math.random() < 0.35; // 65% Galii Appichaa
+    let winAmount = 0;
+    let result = [symbols[0], symbols[1], symbols[2]];
+
+    if (isWin) {
+      const pick = symbols[Math.floor(Math.random() * symbols.length)];
+      result = [pick, pick, pick];
+      winAmount = betAmount * 2;
+      user.coins += winAmount;
+    }
+    await user.save();
+    res.json({ success: true, result, winAmount, newBalance: user.coins });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/payment/verify-shegerpay', async (req, res) => {
+  try {
+    const { userId, referenceId, provider, coinsToAdd } = req.body;
+    if (!referenceId || referenceId.length < 5) return res.status(400).json({ error: 'Transaction ID sirrii galchi!' });
+    const used = await User.findOne({ usedRefs: referenceId });
+    if (used) return res.status(400).json({ error: 'Nagaheen kun duraan itti fayyadamameera!' });
+
+    const user = await getOrCreateUser(userId);
+    user.coins += Number(coinsToAdd || 10000);
+    user.usedRefs.push(referenceId);
+    await user.save();
+    res.json({ success: true, provider, newBalance: user.coins });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 io.on('connection', (socket) => {
-  socket.on('join_room', ({ roomId, userId }) => {
-    socket.join(roomId);
-    if (!rooms[roomId]) rooms[roomId] = { seats: Array(8).fill(null) };
-    io.to(roomId).emit('room_update', rooms[roomId]);
-  });
-
-  socket.on('take_seat', ({ roomId, seatIndex, userId }) => {
-    if (rooms[roomId] && rooms[roomId].seats[seatIndex] === null) {
-      rooms[roomId].seats[seatIndex] = users[userId];
-      io.to(roomId).emit('room_update', rooms[roomId]);
-    }
-  });
-
-  socket.on('send_gift', ({ roomId, senderId, receiverId, giftCost, giftName }) => {
-    const sender = users[senderId];
-    const receiver = users[receiverId];
-    if (sender && receiver && sender.coins >= giftCost) {
-      sender.coins -= giftCost;
-      receiver.coins += Math.floor(giftCost * 0.7);
-      io.to(roomId).emit('gift_received', {
-        from: sender.name,
-        to: receiver.name,
-        giftName,
-        senderBalance: sender.coins
-      });
-    }
+  socket.on('join_room', ({ roomId }) => socket.join(roomId));
+  socket.on('send_gift', async ({ roomId, senderId, receiverId, giftCost, giftName }) => {
+    try {
+      const sender = await getOrCreateUser(senderId);
+      if (sender.coins >= giftCost) {
+        sender.coins -= giftCost;
+        await sender.save();
+        io.to(roomId).emit('gift_received', { from: senderId, to: receiverId, giftName, coinsLeft: sender.coins });
+      }
+    } catch (_) {}
   });
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log(`Jimma Voice Chat Server hojii jalqabeera (Port ${PORT})...`);
-});
+server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
