@@ -137,3 +137,37 @@ app.post('/api/sud/update_sstoken', (req, res) => {
 app.post('/api/sud/notify', (req, res) => {
   res.json({ ret_code: 0, ret_msg: 'success' });
 });
+app.post('/api/sud/get_sstoken', (req, res) => {
+  const { code } = req.body || {};
+  const uid = code ? String(code).split('_').pop() : '1000001';
+  res.json({
+    ret_code: 0,
+    ret_msg: 'success',
+    data: {
+      ss_token: 'sud_ss_' + uid + '_' + Date.now(),
+      expire_date: Date.now() + 7200000,
+      user_info: {
+        uid: uid,
+        nick_name: 'Ethio_Player_' + uid,
+        avatar_url: 'https://flaticon.com',
+        gender: 'male'
+      }
+    }
+  });
+});
+
+app.post('/api/sud/update_sstoken', (req, res) => {
+  const { ss_token } = req.body || {};
+  res.json({
+    ret_code: 0,
+    ret_msg: 'success',
+    data: {
+      ss_token: (ss_token || 'sud_ss_token') + '_refreshed',
+      expire_date: Date.now() + 7200000
+    }
+  });
+});
+
+app.post('/api/sud/notify', (req, res) => {
+  res.json({ ret_code: 0, ret_msg: 'success' });
+});
