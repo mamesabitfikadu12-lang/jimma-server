@@ -11,11 +11,12 @@ app.use(express.json());
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*' } });
 
-const mongoUri = process.env.MONGO_URI || '';
+let dbConnected = false;
+const mongoUri = process.env.MONGODB_URI || '';
 if (mongoUri) {
-  mongoose.connect(mongoUri)
-    .then(() => console.log('MongoDB Atlas Connected!'))
-    .catch(err => console.error('MongoDB Error:', err));
+  mongoose.connect(mongoUri, { serverSelectionTimeoutMS: 4000 })
+    .then(() => { dbConnected = true; console.log('MongoDB Atlas Connected!'); })
+    .catch((err) => { dbConnected = false; console.error('MongoDB Fallback Active:', err.message); });
 }
 
 const userSchema = new mongoose.Schema({
@@ -27,13 +28,23 @@ const userSchema = new mongoose.Schema({
 });
 const User = mongoose.model('User', userSchema);
 
+// Kuusaa Yeroo (Yoo MongoDB hin jirre ofumaan kan tajaajilu)
+const memUsers = new Map();
+const memUsedRefs = new Set();
+
 async function getOrCreateUser(userId) {
-  let user = await User.findOne({ userId });
-  if (!user) user = await User.create({ userId, coins: 0, points: 0, vipLevel: 0, usedRefs: [] });
-  return user;
+  if (dbConnected && mongoose.connection.readyState === 1) {
+    let user = await User.findOne({ userId });
+    if (!user) user = await User.create({ userId, coins: 0, points: 0, vipLevel: 0, usedRefs: [] });
+    return user;
+  }
+  if (!memUsers.has(userId)) {
+    memUsers.set(userId, { userId, coins: 0, points: 0, vipLevel: 0, usedRefs: [] });
+  }
+  return memUsers.get(userId);
 }
 
-app.get('/', (req, res) => res.send('Ethio-Voice Server + MongoDB Live!'));
+app.get('/', (req, res) => res.send('✅ Ethio-Voice Server + MongoDB Live!'));
 
 app.get('/api/user/:userId', async (req, res) => {
   try {
@@ -42,41 +53,34 @@ app.get('/api/user/:userId', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.post('/api/games/slot', async (req, res) => {
-  try {
-    const { userId, betAmount } = req.body;
-    const user = await getOrCreateUser(userId);
-    if (user.coins < betAmount) return res.status(400).json({ error: 'Coins gahaa hin qabdu!' });
-
-    user.coins -= betAmount;
-    const symbols = ['☕ Jebena', '🏰 Palace', '🐎 Oromo Horse', '🪑 Royal Stool', '🦁 Lion'];
-    const isWin = Math.random() < 0.35; // 65% Galii Appichaa
-    let winAmount = 0;
-    let result = [symbols[0], symbols[1], symbols[2]];
-
-    if (isWin) {
-      const pick = symbols[Math.floor(Math.random() * symbols.length)];
-      result = [pick, pick, pick];
-      winAmount = betAmount * 2;
-      user.coins += winAmount;
-    }
-    await user.save();
-    res.json({ success: true, result, winAmount, newBalance: user.coins });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
 app.post('/api/payment/verify-shegerpay', async (req, res) => {
   try {
-    const { userId, referenceId, provider, coinsToAdd } = req.body;
-    if (!referenceId || referenceId.length < 5) return res.status(400).json({ error: 'Transaction ID sirrii galchi!' });
-    const used = await User.findOne({ usedRefs: referenceId });
-    if (used) return res.status(400).json({ error: 'Nagaheen kun duraan itti fayyadamameera!' });
+    const { userId, referenceId, provider, coinsToAdd } = req.body || {};
+    const ref = (referenceId || '').trim().toUpperCase();
+    const uid = (userId || '').trim();
+    const add = parseInt(coinsToAdd, 10) || 10000;
 
-    const user = await getOrCreateUser(userId);
-    user.coins += Number(coinsToAdd || 10000);
-    user.usedRefs.push(referenceId);
-    await user.save();
-    res.json({ success: true, provider, newBalance: user.coins });
+    if (!uid || ref.length < 5) {
+      return res.status(400).json({ error: 'Transaction ID sirrii galchi!' });
+    }
+
+    if (dbConnected && mongoose.connection.readyState === 1) {
+      const used = await User.findOne({ usedRefs: ref });
+      if (used) return res.status(400).json({ error: 'Nagaheen kun duraan itti fayyadamameera!' });
+      const user = await getOrCreateUser(uid);
+      user.coins += add;
+      user.usedRefs.push(ref);
+      await user.save();
+      return res.json({ success: true, provider, newBalance: user.coins });
+    }
+
+    if (memUsedRefs.has(ref)) {
+      return res.status(400).json({ error: 'Nagaheen kun duraan itti fayyadamameera!' });
+    }
+    memUsedRefs.add(ref);
+    const user = await getOrCreateUser(uid);
+    user.coins += add;
+    return res.json({ success: true, provider, newBalance: user.coins });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -87,7 +91,7 @@ io.on('connection', (socket) => {
       const sender = await getOrCreateUser(senderId);
       if (sender.coins >= giftCost) {
         sender.coins -= giftCost;
-        await sender.save();
+        if (sender.save) await sender.save();
         io.to(roomId).emit('gift_received', { from: senderId, to: receiverId, giftName, coinsLeft: sender.coins });
       }
     } catch (_) {}
