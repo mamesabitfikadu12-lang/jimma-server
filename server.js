@@ -1,173 +1,176 @@
 const express = require('express');
 const http = require('http');
-const { Server } = require('socket.io');
 const cors = require('cors');
-const mongoose = require('mongoose');
+const crypto = require('crypto');
+const fs = require('fs');
+const { Server } = require('socket.io');
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
+
+const DB_FILE = './ethio_voice_db.json';
+const SUD_APP_ID = '2122085803670614016';
+const SUD_APP_SECRET = 'tb2umxnklxv9vz482n4ayptvhau6yah7';
+
+let db = {
+  users: {
+    'admin@ethiovoice.com': {
+      uid: '1000001',
+      name: 'Mohammedsabit (Founder)',
+      contact: 'admin@ethiovoice.com',
+      pass: '142730',
+      coins: 500000,
+      points: 250000,
+      vipLevel: 19,
+      hostLv: 15,
+      wealthLv: 20,
+      isAgency: true,
+      isCoinSeller: true
+    }
+  },
+  otps: {},
+  pendingRecharges: [],
+  usedHashes: []
+};
+
+if (fs.existsSync(DB_FILE)) {
+  try {
+    db = Object.assign(db, JSON.parse(fs.readFileSync(DB_FILE, 'utf8')));
+  } catch (e) {}
+}
+
+function saveDb() {
+  try {
+    fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
+  } catch (e) {}
+}
+
+app.get('/', (req, res) => {
+  res.json({ status: 'Ethio-Voice Cloud Server Active', usersCount: Object.keys(db.users).length });
+});
+
+// 1. SIGN UP
+app.post('/api/auth/signup', (req, res) => {
+  const contact = (req.body.contact || '').trim().toLowerCase();
+  const name = (req.body.name || '').trim();
+  const pass = (req.body.pass || '').trim();
+  const ref = (req.body.ref || '').trim();
+
+  if (!contact || !name || pass.length < 6) {
+    return res.status(400).json({ ok: false, msg: 'Enter valid Name, Email/Phone & Password (min 6 chars)' });
+  }
+  if (db.users[contact]) {
+    return res.status(409).json({ ok: false, msg: 'Account already exists! Please Login.' });
+  }
+  const uid = String(1000000 + Object.keys(db.users).length + 1);
+  const startCoins = ref.length >= 5 ? 1500 : 1000;
+  db.users[contact] = {
+    uid,
+    name,
+    contact,
+    pass,
+    coins: startCoins,
+    points: 0,
+    vipLevel: 0,
+    hostLv: 1,
+    wealthLv: 1,
+    isAgency: false,
+    isCoinSeller: false
+  };
+  saveDb();
+  res.json({ ok: true, user: db.users[contact] });
+});
+
+// 2. STRICT LOGIN
+app.post('/api/auth/login', (req, res) => {
+  const contact = (req.body.contact || '').trim().toLowerCase();
+  const pass = (req.body.pass || '').trim();
+  const u = db.users[contact];
+  if (!u || u.pass !== pass) {
+    return res.status(401).json({ ok: false, msg: 'Wrong Email/Phone or Incorrect Password!' });
+  }
+  res.json({ ok: true, user: u });
+});
+
+// 3. FORGOT PASSWORD - SEND 6-DIGIT OTP
+app.post('/api/auth/send-otp', (req, res) => {
+  const contact = (req.body.contact || '').trim().toLowerCase();
+  if (!db.users[contact]) {
+    return res.status(404).json({ ok: false, msg: 'No account found with this Email/Phone!' });
+  }
+  const code = String(Math.floor(100000 + Math.random() * 900000));
+  db.otps[contact] = { code, exp: Date.now() + 10 * 60 * 1000 };
+  saveDb();
+  res.json({ ok: true, code, msg: 'Verification code generated' });
+});
+
+// 4. VERIFY OTP & RESET PASSWORD / DIRECT LOGIN
+app.post('/api/auth/verify-otp', (req, res) => {
+  const contact = (req.body.contact || '').trim().toLowerCase();
+  const code = (req.body.code || '').trim();
+  const newPass = (req.body.newPass || '').trim();
+  const record = db.otps[contact];
+  if (!record || record.code !== code || Date.now() > record.exp) {
+    return res.status(400).json({ ok: false, msg: 'Invalid or expired 6-digit code!' });
+  }
+  if (newPass.length >= 6) {
+    db.users[contact].pass = newPass;
+  }
+  delete db.otps[contact];
+  saveDb();
+  res.json({ ok: true, user: db.users[contact] });
+});
+
+// 5. SYNC COINS, POINTS & VIP TO CLOUD
+app.post('/api/user/sync', (req, res) => {
+  const contact = (req.body.contact || '').trim().toLowerCase();
+  if (db.users[contact]) {
+    const u = db.users[contact];
+    if (typeof req.body.coins === 'number') u.coins = req.body.coins;
+    if (typeof req.body.points === 'number') u.points = req.body.points;
+    if (typeof req.body.vipLevel === 'number') u.vipLevel = req.body.vipLevel;
+    if (typeof req.body.hostLv === 'number') u.hostLv = req.body.hostLv;
+    if (typeof req.body.wealthLv === 'number') u.wealthLv = req.body.wealthLv;
+    if (typeof req.body.name === 'string' && req.body.name.trim()) u.name = req.body.name.trim();
+    saveDb();
+    return res.json({ ok: true, user: u });
+  }
+  res.status(404).json({ ok: false });
+});
+
+// 6. SUD.TECH GAME AUTHENTICATION ENDPOINTS
+app.post('/api/sud/get_sstoken', (req, res) => {
+  const code = req.body.code || '';
+  const uid = code.replace('ethio_', '') || '1000001';
+  const ssToken = crypto.createHmac('sha256', SUD_APP_SECRET).update(`${uid}_${Date.now()}`).digest('hex');
+  res.json({
+    ret_code: 0,
+    ret_msg: 'success',
+    data: {
+      ss_token: ssToken,
+      expire_date: Date.now() + 24 * 3600 * 1000,
+      user_info: { uid, nick_name: `Player_${uid}`, avatar_url: '' }
+    }
+  });
+});
+
+app.post('/api/sud/update_sstoken', (req, res) => {
+  const newToken = crypto.createHmac('sha256', SUD_APP_SECRET).update(`refresh_${Date.now()}`).digest('hex');
+  res.json({
+    ret_code: 0,
+    ret_msg: 'success',
+    data: { ss_token: newToken, expire_date: Date.now() + 24 * 3600 * 1000 }
+  });
+});
 
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*' } });
 
-let dbConnected = false;
-const mongoUri = process.env.MONGODB_URI || '';
-if (mongoUri) {
-  mongoose.connect(mongoUri, { serverSelectionTimeoutMS: 3000 })
-    .then(() => { dbConnected = true; console.log('MongoDB Atlas Connected!'); })
-    .catch((err) => { dbConnected = false; console.log('Using Fast Memory Store:', err.message); });
-}
-
-const userSchema = new mongoose.Schema({
-  userId: { type: String, unique: true },
-  coins: { type: Number, default: 0 },
-  points: { type: Number, default: 0 },
-  vipLevel: { type: Number, default: 0 },
-  usedRefs: { type: [String], default: [] }
-});
-const User = mongoose.model('User', userSchema);
-
-const memUsers = new Map();
-const memUsedRefs = new Set();
-
-async function getMemUser(userId) {
-  if (!memUsers.has(userId)) {
-    memUsers.set(userId, { userId, coins: 0, points: 0, vipLevel: 0, usedRefs: [] });
-  }
-  return memUsers.get(userId);
-}
-
-app.get('/', (req, res) => res.send('✅ Ethio-Voice Server Live!'));
-
-app.get('/api/user/:userId', async (req, res) => {
-  try {
-    const uid = req.params.userId;
-    if (dbConnected && mongoose.connection.readyState === 1) {
-      let user = await User.findOne({ userId: uid }).maxTimeMS(2500);
-      if (!user) user = await User.create({ userId: uid, coins: 0, points: 0, vipLevel: 0, usedRefs: [] });
-      return res.json({ success: true, coins: user.coins, points: user.points, vipLevel: user.vipLevel });
-    }
-    const u = await getMemUser(uid);
-    return res.json({ success: true, coins: u.coins, points: u.points, vipLevel: u.vipLevel });
-  } catch (e) {
-    const u = await getMemUser(req.params.userId);
-    return res.json({ success: true, coins: u.coins, points: u.points, vipLevel: u.vipLevel });
-  }
-});
-
-app.post('/api/payment/verify-shegerpay', async (req, res) => {
-  const { userId, referenceId, provider, coinsToAdd } = req.body || {};
-  const ref = (referenceId || '').trim().toUpperCase();
-  const uid = (userId || '').trim();
-  const add = parseInt(coinsToAdd, 10) || 10000;
-
-  if (!uid || ref.length < 5) {
-    return res.status(400).json({ error: 'Transaction ID sirrii galchi!' });
-  }
-
-  try {
-    if (dbConnected && mongoose.connection.readyState === 1) {
-      const used = await User.findOne({ usedRefs: ref }).maxTimeMS(2500);
-      if (used) return res.status(400).json({ error: 'Nagaheen kun duraan itti fayyadamameera!' });
-      let user = await User.findOne({ userId: uid }).maxTimeMS(2500);
-      if (!user) user = await User.create({ userId: uid, coins: 0, points: 0, vipLevel: 0, usedRefs: [] });
-      user.coins += add;
-      user.usedRefs.push(ref);
-      await user.save();
-      return res.json({ success: true, provider, newBalance: user.coins });
-    }
-  } catch (_) {}
-
-  if (memUsedRefs.has(ref)) {
-    return res.status(400).json({ error: 'Nagaheen kun duraan itti fayyadamameera!' });
-  }
-  memUsedRefs.add(ref);
-  const user = await getMemUser(uid);
-  user.coins += add;
-  return res.json({ success: true, provider, newBalance: user.coins });
-});
-
 io.on('connection', (socket) => {
-  socket.on('join_room', ({ roomId }) => socket.join(roomId));
-  socket.on('send_gift', async ({ roomId, senderId, receiverId, giftCost, giftName }) => {
-    try {
-      const sender = await getMemUser(senderId);
-      if (sender.coins >= giftCost) {
-        sender.coins -= giftCost;
-        io.to(roomId).emit('gift_received', { from: senderId, to: receiverId, giftName, coinsLeft: sender.coins });
-      }
-    } catch (_) {}
-  });
+  socket.on('join_room', (roomId) => socket.join(roomId));
+  socket.on('room_msg', (data) => io.to(data.roomId).emit('room_msg', data));
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
-app.post('/api/sud/get_sstoken', (req, res) => {
-  const { code } = req.body || {};
-  const uid = code ? String(code).split('_')[0] : '1000001';
-  res.json({
-    ret_code: 0,
-    ret_msg: 'success',
-    data: {
-      ss_token: 'sud_ss_' + uid + '_' + Date.now(),
-      expire_date: Date.now() + 7200000,
-      user_info: {
-        uid: uid,
-        nick_name: 'Ethio_Player_' + uid,
-        avatar_url: 'https://flaticon.com',
-        gender: 'male'
-      }
-    }
-  });
-});
-
-app.post('/api/sud/update_sstoken', (req, res) => {
-  const { ss_token } = req.body || {};
-  res.json({
-    ret_code: 0,
-    ret_msg: 'success',
-    data: {
-      ss_token: (ss_token || 'sud_ss_token') + '_refreshed',
-      expire_date: Date.now() + 7200000
-    }
-  });
-});
-
-app.post('/api/sud/notify', (req, res) => {
-  res.json({ ret_code: 0, ret_msg: 'success' });
-});
-app.post('/api/sud/get_sstoken', (req, res) => {
-  const { code } = req.body || {};
-  const uid = code ? String(code).split('_').pop() : '1000001';
-  res.json({
-    ret_code: 0,
-    ret_msg: 'success',
-    data: {
-      ss_token: 'sud_ss_' + uid + '_' + Date.now(),
-      expire_date: Date.now() + 7200000,
-      user_info: {
-        uid: uid,
-        nick_name: 'Ethio_Player_' + uid,
-        avatar_url: 'https://flaticon.com',
-        gender: 'male'
-      }
-    }
-  });
-});
-
-app.post('/api/sud/update_sstoken', (req, res) => {
-  const { ss_token } = req.body || {};
-  res.json({
-    ret_code: 0,
-    ret_msg: 'success',
-    data: {
-      ss_token: (ss_token || 'sud_ss_token') + '_refreshed',
-      expire_date: Date.now() + 7200000
-    }
-  });
-});
-
-app.post('/api/sud/notify', (req, res) => {
-  res.json({ ret_code: 0, ret_msg: 'success' });
-});
+server.listen(PORT, () => console.log(`Ethio-Voice Server running on port ${PORT}`));
