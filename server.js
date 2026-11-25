@@ -11,8 +11,8 @@ app.use(cors());
 app.use(express.json({ limit: '15mb' }));
 
 const DB_FILE = './ethio_voice_db.json';
-const SUD_APP_ID = '2122085803670614016';
-const SUD_APP_SECRET = 'th2xmnklxv9vz482n4ayptvhau6yah27';
+const SUD_APP_ID = '2125623090652110848';
+const SUD_APP_SECRET = '6ru8u9ecd6zmh1klotf3mmfaiqm6atl9';
 const TG_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '9163789861:AAG_a0CFrOqF-G1cCxgqEtRDjJXGwFnuZ4w';
 const TG_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '1981380589';
 const SB_URL = (process.env.SUPABASE_URL || 'https://supabase.co').replace(/\/$/, '');
@@ -158,6 +158,42 @@ io.on('connection', (socket) => {
   socket.on('take_seat', ({ roomId, seatIndex, user }) => { if (!roomSeats[roomId]) roomSeats[roomId] = {}; Object.keys(roomSeats[roomId]).forEach((k) => { if (roomSeats[roomId][k]?.uid === user.uid) delete roomSeats[roomId][k]; }); roomSeats[roomId][seatIndex] = { ...user, socketId: socket.id, muted: false }; io.to(roomId).emit('seats_update', roomSeats[roomId]); });
   socket.on('leave_seat', ({ roomId, uid }) => { if (roomSeats[roomId]) { Object.keys(roomSeats[roomId]).forEach((k) => { if (roomSeats[roomId][k]?.uid === uid) delete roomSeats[roomId][k]; }); io.to(roomId).emit('seats_update', roomSeats[roomId]); } });
   socket.on('room_msg', (d) => io.to(d.roomId).emit('room_msg', d));
+});
+
+app.post('/api/sud/update_sstoken', (req, res) => {
+  const newToken = crypto.createHmac('sha256', SUD_APP_SECRET).update(`refresh_${Date.now()}`).digest('hex');
+  res.json({ ret_code: 0, ret_msg: 'success', data: { ss_token: newToken, expire_date: Date.now() + 86400000 } });
+});
+
+app.post('/api/sud/report_game_info', (req, res) => res.json({ ret_code: 0, ret_msg: 'success' }));
+
+app.post('/api/sud/notify', (req, res) => {
+  const body = req.body || {};
+  const user = Object.values(db.users).find((u) => u.uid === String(body.uid || ''));
+  const amt = Number(body.value || body.amount || 0);
+  if (user && amt !== 0) { user.coins = Math.max(0, (user.coins || 0) + amt); saveDb(); }
+  res.json({ ret_code: 0, ret_msg: 'success', data: { currency_amount: user ? user.coins : 5000 } });
+});
+
+app.get('/api/games', (req, res) => {
+  const base = 'https://sud.tech';
+  res.json({
+    ok: true,
+    sudAppId: SUD_APP_ID,
+    sudAppKey: '509xc6xzb7h1o23azkb1v35mwfodg5d1',
+    games: [
+      { id: '1461227817776713818', name: 'Ludo 3D', cat: 'Board', tag: 'HOT', url: `${base}1461227817776713818` },
+      { id: '1461228492543754284', name: 'Domino Royal', cat: 'Board', tag: 'TOP', url: `${base}1461228492543754284` },
+      { id: '1461228465024925740', name: 'Teen Patti', cat: 'Card', tag: 'HOT', url: `${base}1461228465024925740` },
+      { id: '1461228436944060458', name: 'Texas Holdem Poker', cat: 'Card', tag: 'VIP', url: `${base}1461228436944060458` },
+      { id: '1461228410184400899', name: 'UMO Party', cat: 'Card', tag: 'FUN', url: `${base}1461228410184400899` },
+      { id: '1461228379255603251', name: 'Knife Challenge', cat: 'Arcade', tag: 'NEW', url: `${base}1461228379255603251` },
+      { id: '1468180338417074177', name: 'Minesweeper', cat: 'Arcade', tag: 'PRO', url: `${base}1468180338417074177` },
+      { id: '1461228520020639789', name: 'Liars Dice', cat: 'Party', tag: 'LIVE', url: `${base}1461228520020639789` },
+      { id: '1472142559912517633', name: 'Werewolf', cat: 'Party', tag: 'TOP', url: `${base}1472142559912517633` },
+      { id: '1472142640866844673', name: 'Number Bomb', cat: 'Party', tag: 'HOT', url: `${base}1472142640866844673` }
+    ]
+  });
 });
 
 const PORT = process.env.PORT || 3000;
